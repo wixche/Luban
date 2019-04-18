@@ -3,7 +3,6 @@ package top.zibin.luban;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
-import android.media.ExifInterface;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -14,79 +13,53 @@ import java.io.IOException;
  * Responsible for starting compress and managing active and cached resources.
  */
 class Engine {
-  private ExifInterface srcExif;
-  private File srcImg;
+  private InputStreamProvider srcImg;
   private File tagImg;
   private int srcWidth;
   private int srcHeight;
+  private boolean focusAlpha;
 
-  Engine(File srcImg, File tagImg) throws IOException {
-    if (isJpeg(srcImg)) {
-      this.srcExif = new ExifInterface(srcImg.getAbsolutePath());
-    }
+  Engine(InputStreamProvider srcImg, File tagImg, boolean focusAlpha) throws IOException {
     this.tagImg = tagImg;
     this.srcImg = srcImg;
+    this.focusAlpha = focusAlpha;
 
     BitmapFactory.Options options = new BitmapFactory.Options();
     options.inJustDecodeBounds = true;
     options.inSampleSize = 1;
 
-    BitmapFactory.decodeFile(srcImg.getAbsolutePath(), options);
+    BitmapFactory.decodeStream(srcImg.open(), null, options);
     this.srcWidth = options.outWidth;
     this.srcHeight = options.outHeight;
   }
 
-  private boolean isJpeg(File photo) {
-    return photo.getAbsolutePath().contains("jpeg") || photo.getAbsolutePath().contains("jpg");
-  }
-
   private int computeSize() {
-    int mSampleSize;
-
     srcWidth = srcWidth % 2 == 1 ? srcWidth + 1 : srcWidth;
     srcHeight = srcHeight % 2 == 1 ? srcHeight + 1 : srcHeight;
 
-    srcWidth = srcWidth > srcHeight ? srcHeight : srcWidth;
-    srcHeight = srcWidth > srcHeight ? srcWidth : srcHeight;
+    int longSide = Math.max(srcWidth, srcHeight);
+    int shortSide = Math.min(srcWidth, srcHeight);
 
-    double scale = ((double) srcWidth / srcHeight);
-
+    float scale = ((float) shortSide / longSide);
     if (scale <= 1 && scale > 0.5625) {
-      if (srcHeight < 1664) {
-        mSampleSize = 1;
-      } else if (srcHeight >= 1664 && srcHeight < 4990) {
-        mSampleSize = 2;
-      } else if (srcHeight >= 4990 && srcHeight < 10240) {
-        mSampleSize = 4;
+      if (longSide < 1664) {
+        return 1;
+      } else if (longSide < 4990) {
+        return 2;
+      } else if (longSide > 4990 && longSide < 10240) {
+        return 4;
       } else {
-        mSampleSize = srcHeight / 1280 == 0 ? 1 : srcHeight / 1280;
+        return longSide / 1280 == 0 ? 1 : longSide / 1280;
       }
     } else if (scale <= 0.5625 && scale > 0.5) {
-      mSampleSize = srcHeight / 1280 == 0 ? 1 : srcHeight / 1280;
+      return longSide / 1280 == 0 ? 1 : longSide / 1280;
     } else {
-      mSampleSize = (int) Math.ceil(srcHeight / (1280.0 / scale));
+      return (int) Math.ceil(longSide / (1280.0 / scale));
     }
-
-    return mSampleSize;
   }
 
-  private Bitmap rotatingImage(Bitmap bitmap) {
-    if (srcExif == null) return bitmap;
-
+  private Bitmap rotatingImage(Bitmap bitmap, int angle) {
     Matrix matrix = new Matrix();
-    int angle = 0;
-    int orientation = srcExif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-    switch (orientation) {
-      case ExifInterface.ORIENTATION_ROTATE_90:
-        angle = 90;
-        break;
-      case ExifInterface.ORIENTATION_ROTATE_180:
-        angle = 180;
-        break;
-      case ExifInterface.ORIENTATION_ROTATE_270:
-        angle = 270;
-        break;
-    }
 
     matrix.postRotate(angle);
 
@@ -97,11 +70,13 @@ class Engine {
     BitmapFactory.Options options = new BitmapFactory.Options();
     options.inSampleSize = computeSize();
 
-    Bitmap tagBitmap = BitmapFactory.decodeFile(srcImg.getAbsolutePath(), options);
+    Bitmap tagBitmap = BitmapFactory.decodeStream(srcImg.open(), null, options);
     ByteArrayOutputStream stream = new ByteArrayOutputStream();
 
-    tagBitmap = rotatingImage(tagBitmap);
-    tagBitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream);
+    if (Checker.SINGLE.isJPG(srcImg.open())) {
+      tagBitmap = rotatingImage(tagBitmap, Checker.SINGLE.getOrientation(srcImg.open()));
+    }
+    tagBitmap.compress(focusAlpha ? Bitmap.CompressFormat.PNG : Bitmap.CompressFormat.JPEG, 60, stream);
     tagBitmap.recycle();
 
     FileOutputStream fos = new FileOutputStream(tagImg);
